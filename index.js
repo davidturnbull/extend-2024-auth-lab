@@ -5,6 +5,7 @@ const cookieParser = require('cookie-parser');
 const app = express();
 app.use(cookieParser());
 
+// Set up environment variables
 const CANVA_CLIENT_ID = process.env.CANVA_CLIENT_ID;
 const CANVA_CLIENT_SECRET = process.env.CANVA_CLIENT_SECRET;
 
@@ -16,9 +17,19 @@ if (!CANVA_CLIENT_SECRET) {
   throw new Error("CANVA_CLIENT_SECRET environment variable is not set");
 }
 
+// Create the server URL
+const CODESPACE_NAME = process.env.CODESPACE_NAME;
+const PORT = process.env.PORT || 3000;
+const SERVER_URL = CODESPACE_NAME
+  ? `https://${CODESPACE_NAME}-${PORT}.app.github.dev`
+  : `http://localhost:${PORT}`;
+
+// Create the Redirect URL
+const REDIRECT_URI_PATH = "/oauth/redirect";
+const REDIRECT_URI = SERVER_URL + REDIRECT_URI_PATH;
+
 // Handles requests to the index page
 app.get('/', (req, res) => {
-  // The list of scopes to request access to
   const scopes = new Set([
     "app:read",
     "app:write",
@@ -40,26 +51,29 @@ app.get('/', (req, res) => {
     "profile:read",
   ]);
 
-  // Generate "code verifier" and "state" strings
   const codeVerifier = createCodeVerifier();
   const state = createState();
 
-  // Store the code verifier and state in cookies
-  res.cookie('codeVerifier', codeVerifier, { httpOnly: true, secure: true });
-  res.cookie('state', state, { httpOnly: true, secure: true });
+  // Store the code verifier and state in cookies with appropriate settings
+  res.cookie('codeVerifier', codeVerifier, {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'lax'
+  });
+  res.cookie('state', state, {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'lax'
+  });
 
-  // Create a "code challenge" that's derived from the code verifier
   createCodeChallenge(codeVerifier).then(codeChallenge => {
-    // Construct the URL of the "Log in with Canva" button
-    const redirectUri = `${req.protocol}://${req.get('host')}/oauth/redirect`;
     buildAuthUrl({
       clientId: CANVA_CLIENT_ID,
-      redirectUri: redirectUri,
+      redirectUri: REDIRECT_URI,
       scopes,
       codeChallenge,
       state,
     }).then(authUrl => {
-      // Create the HTML that renders a "Log in with Canva" button
       const html = `
       <!DOCTYPE html>
       <html lang="en">
@@ -74,43 +88,37 @@ app.get('/', (req, res) => {
       </html>
     `;
 
-      // Return the HTML for the index page
       res.send(html);
     });
   });
 });
 
 // Handles requests to the Redirect URL
-app.get('/oauth/redirect', async (req, res) => {
-  const { code, state } = req.query;
+app.get(REDIRECT_URI_PATH, async (req, res) => {
+  const { code, state: returnedState } = req.query;
   const { codeVerifier, state: storedState } = req.cookies;
 
-  // If the code verifier isn't available, the request is invalid
   if (!codeVerifier) {
     return res.status(400).send("Invalid codeVerifier");
   }
 
-  // If the stored state doesn't match the "state" query parameter, the request is invalid
-  if (state !== storedState) {
-    return res.status(400).send("Invalid state");
+  if (returnedState !== storedState) {
+    return res.status(400).send(`Invalid state. Returned: ${returnedState}, Stored: ${storedState}`);
   }
 
-  // Use the "code" and "code verifier" values to fetch an access token
   try {
-    const redirectUri = `${req.protocol}://${req.get('host')}/oauth/redirect`;
+
     const tokenResponse = await fetchAccessToken(
       code,
       codeVerifier,
       CANVA_CLIENT_ID,
       CANVA_CLIENT_SECRET,
-      redirectUri,
+      REDIRECT_URI
     );
 
-    // Clear the cookies
     res.clearCookie('codeVerifier');
     res.clearCookie('state');
 
-    // If the values are valid, the response will contain an access token
     res.json(tokenResponse);
   } catch (error) {
     res.status(500).send(`Error exchanging code for token: ${error.message}`);
@@ -178,8 +186,7 @@ async function fetchAccessToken(
 
   return response.json();
 }
-
-const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+  console.log(`The server is running at ${SERVER_URL}`);
+  console.log(`The Redirect URL is ${REDIRECT_URI}`);
 });
